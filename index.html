@@ -654,12 +654,12 @@ if (enterBtn && intro) {
    DEFAULT STOCK — shown only if the database has no rows
 ========================================================= */
 const DEFAULT_STOCK = [
-  {id:"d1", name:"Handloom Cotton Kurta", cat:"Cotton", price:899,  swatch:"linear-gradient(135deg,#0E4B43,#0a3a34)"},
-  {id:"d2", name:"Banarasi Silk Saree",   cat:"Silk",   price:3499, swatch:"linear-gradient(135deg,#6B1F2E,#4A1420)"},
-  {id:"d3", name:"Embroidered Suit Set",  cat:"Suit",   price:1899, swatch:"linear-gradient(135deg,#C9A227,#8f7018)"},
-  {id:"d4", name:"Festive Sherwani",      cat:"Sherwani", price:4299, swatch:"linear-gradient(135deg,#211A14,#4A1420)"},
-  {id:"d5", name:"Pashmina Shawl",        cat:"Shawl",  price:1299, swatch:"linear-gradient(135deg,#0E4B43,#C9A227)"},
-  {id:"d6", name:"Denim Casual Shirt",    cat:"Denim",  price:749,  swatch:"linear-gradient(135deg,#2b3a4a,#1a2530)"}
+  {id:"d1", name:"Handloom Cotton Kurta", description:"Cotton", category:"Cotton", price:899,  image_url:null, swatch:"linear-gradient(135deg,#0E4B43,#0a3a34)"},
+  {id:"d2", name:"Banarasi Silk Saree",   description:"Silk",   category:"Silk",   price:3499, image_url:null, swatch:"linear-gradient(135deg,#6B1F2E,#4A1420)"},
+  {id:"d3", name:"Embroidered Suit Set",  description:"Suit",   category:"Suit",   price:1899, image_url:null, swatch:"linear-gradient(135deg,#C9A227,#8f7018)"},
+  {id:"d4", name:"Festive Sherwani",      description:"Sherwani", category:"Sherwani", price:4299, image_url:null, swatch:"linear-gradient(135deg,#211A14,#4A1420)"},
+  {id:"d5", name:"Pashmina Shawl",        description:"Shawl",  category:"Shawl",  price:1299, image_url:null, swatch:"linear-gradient(135deg,#0E4B43,#C9A227)"},
+  {id:"d6", name:"Denim Casual Shirt",    description:"Denim",  category:"Denim",  price:749,  image_url:null, swatch:"linear-gradient(135deg,#2b3a4a,#1a2530)"}
 ];
 
 /* ---------- GLOBAL STATE ---------- */
@@ -688,14 +688,18 @@ function toast(message){
 }
 
 function normalizeItem(item){
+  const category = item.category || item.cat || 'General';
+  const description = item.description || item.cat || category;
+
   return {
     id: item.id,
     name: item.name || '',
-    cat: item.cat || 'General',
+    description,
+    category,
     price: Number(item.price || 0),
-    img: item.img || null,
+    img: item.image_url || item.img || null,
     swatch: item.swatch || null,
-    image_path: item.image_path || null,
+    image_url: item.image_url || item.img || null,
     created_at: item.created_at || null
   };
 }
@@ -706,8 +710,8 @@ function normalizeItem(item){
 async function loadCollections(){
   const { data, error } = await supabaseClient
     .from('collections')
-    .select('*')
-    .order('created_at', { ascending:false });
+    .select('id, name, description, price, image_url, category')
+    .order('id', { ascending:false });
 
   if(error){
     console.error('Supabase load error:', error);
@@ -769,7 +773,7 @@ async function uploadCollectionImage(file){
 /* =========================================================
    PART 8 — ADD COLLECTION TO SUPABASE
 ========================================================= */
-async function addCollection({name, category, price, file}){
+async function addCollection({name, cat, price, file}){
   let image = {url:null, path:null};
 
   if(file){
@@ -778,11 +782,10 @@ async function addCollection({name, category, price, file}){
 
   const row = {
     name,
-    category: category || 'General',
+    description: cat || '',
+    category: cat || 'General',
     price: Number(price),
-    img: image.url,
-    image_path: image.path,
-    swatch: image.url ? null : 'linear-gradient(135deg,#C9A227,#6B1F2E)'
+    image_url: image.url
   };
 
   const { data, error } = await supabaseClient
@@ -842,7 +845,7 @@ function buildWhatsAppLink(item){
   const details = [
     'Hello, I am interested in this collection item.',
     `Item: ${item.name}`,
-    `Category: ${item.cat || 'General'}`,
+    `Category: ${item.category || item.description || 'General'}`,
     `Price: ₹${Number(item.price).toLocaleString('en-IN')}`,
     'Please send me availability and more details.'
   ].join('\n');
@@ -865,8 +868,8 @@ function renderProducts(){
     const el = document.createElement('div');
     el.className = 'tag';
 
-    const mediaInner = item.img
-      ? `<img src="${escapeHtml(item.img)}" alt="${escapeHtml(item.name)}" loading="lazy">`
+    const mediaInner = item.image_url || item.img
+      ? `<img src="${escapeHtml(item.image_url || item.img)}" alt="${escapeHtml(item.name)}" loading="lazy">`
       : `<div style="width:100%;height:100%;background:${item.swatch || 'linear-gradient(135deg,#C9A227,#6B1F2E)'}"></div>`;
 
     const whatsappLink = buildWhatsAppLink(item);
@@ -881,7 +884,10 @@ function renderProducts(){
       </div>
       <div class="tag-body">
         <div class="tag-name">${escapeHtml(item.name)}</div>
-        <div class="tag-cat">${escapeHtml(item.cat || 'General')}</div>
+        <div class="tag-cat">${escapeHtml(item.category || item.description || 'General')}</div>
+        ${item.description && item.description !== item.category
+          ? `<div class="tag-cat" style="margin-top:6px;color:#7d6854;">${escapeHtml(item.description)}</div>`
+          : ''}
         <div class="tag-price">₹ ${Number(item.price).toLocaleString('en-IN')}</div>
         <div class="tag-action"><a href="${whatsappLink}" target="_blank" rel="noopener">Message about this item</a></div>
       </div>
@@ -1076,13 +1082,16 @@ function renderAdminList(){
     const row = document.createElement('div');
     row.className = 'admin-stock-row';
 
-    const thumb = item.img
-      ? `<img src="${escapeHtml(item.img)}" alt="">`
+    const thumb = item.image_url || item.img
+      ? `<img src="${escapeHtml(item.image_url || item.img)}" alt="">`
       : `<div style="width:36px;height:44px;border-radius:2px;background:${item.swatch || '#C9A227'}"></div>`;
 
     row.innerHTML = `
       ${thumb}
-      <div class="n">${escapeHtml(item.name)}</div>
+      <div class="n">
+        <div>${escapeHtml(item.name)}</div>
+        <div style="font-size:11px;color:#8a7d6c;margin-top:3px;">${escapeHtml(item.category || item.description || 'General')}</div>
+      </div>
       <div class="p">₹${Number(item.price).toLocaleString('en-IN')}</div>
       <button data-id="${escapeHtml(item.id)}">Remove</button>
     `;
