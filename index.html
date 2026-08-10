@@ -12,6 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,500&family=Jost:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
 <style>
   :root{
     --maroon:#6B1F2E;
@@ -393,6 +394,7 @@
     .admin-badge{top:12px; right:12px; padding:6px 12px; font-size:9px;}
   }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -605,53 +607,277 @@
 
 <script>
 /* =========================================================
-   CONFIG
+   INAAYAT FASHION CENTRE — SUPABASE VERSION
+   Parts 6+ : Database CRUD + Storage + Realtime
 ========================================================= */
-const ADMIN_PASSWORD = "kalam"; // change this
-const STORAGE_KEY = "inaayat_stock_v1";
+
+/* ---------- SUPABASE CONFIG ---------- */
+// Your current public/publishable Supabase key is safe to use in browser code.
+// NEVER put a service_role/secret key in this file.
+const SUPABASE_URL = "https://wjamckaekhjgcyaoaxpp.supabase.co";
+const SUPABASE_KEY = "sb_publishable_3TOxY23YT8nFy9sd7f-2UA_9Xbn-VJN";
+
+/* ---------- ADMIN CONFIG ---------- */
+// This browser password is NOT a secure authentication system.
+// We will replace it with Supabase Auth in the security part later.
+const ADMIN_PASSWORD = "inaayat2026";
+const STORAGE_BUCKET = "collection-images";
+
+const supabaseClient = window.supabase.createClient(
+  SUPABASE_URL,
+  SUPABASE_KEY
+);
 
 /* =========================================================
-   DEFAULT STOCK (placeholders — replace via Admin Panel)
+   INTRO — ENTER THE SHOP
+   The button must hide the full-screen intro overlay and
+   reveal the main website.
+========================================================= */
+const enterBtn = document.getElementById('enterBtn');
+const intro = document.getElementById('intro');
+
+if (enterBtn && intro) {
+  enterBtn.addEventListener('click', () => {
+    intro.classList.add('hide');
+
+    // Keep the page at the top when entering the shop.
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Remove the intro from interaction after the fade-out.
+    setTimeout(() => {
+      intro.style.display = 'none';
+    }, 1200);
+  });
+}
+
+/* =========================================================
+   DEFAULT STOCK — shown only if the database has no rows
 ========================================================= */
 const DEFAULT_STOCK = [
   {id:"d1", name:"Handloom Cotton Kurta", cat:"Cotton", price:899,  swatch:"linear-gradient(135deg,#0E4B43,#0a3a34)"},
   {id:"d2", name:"Banarasi Silk Saree",   cat:"Silk",   price:3499, swatch:"linear-gradient(135deg,#6B1F2E,#4A1420)"},
   {id:"d3", name:"Embroidered Suit Set",  cat:"Suit",   price:1899, swatch:"linear-gradient(135deg,#C9A227,#8f7018)"},
-  {id:"d4", name:"Festive Sherwani",      cat:"Sherwani",price:4299,swatch:"linear-gradient(135deg,#211A14,#4A1420)"},
+  {id:"d4", name:"Festive Sherwani",      cat:"Sherwani", price:4299, swatch:"linear-gradient(135deg,#211A14,#4A1420)"},
   {id:"d5", name:"Pashmina Shawl",        cat:"Shawl",  price:1299, swatch:"linear-gradient(135deg,#0E4B43,#C9A227)"},
   {id:"d6", name:"Denim Casual Shirt",    cat:"Denim",  price:749,  swatch:"linear-gradient(135deg,#2b3a4a,#1a2530)"}
 ];
 
-function loadStock(){
-  try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
-  }catch(e){}
-  return DEFAULT_STOCK.slice();
-}
-function saveStock(stock){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(stock)); }catch(e){}
-}
-let stock = loadStock();
+/* ---------- GLOBAL STATE ---------- */
+let stock = [];
+let isAdmin = false;
+let pendingImageFile = null;
+let pendingImagePreview = null;
+let realtimeChannel = null;
 
 /* =========================================================
-   RENDER PRODUCTS
+   HELPERS
 ========================================================= */
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, m => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[m]));
+}
+
+function toast(message){
+  const t = document.getElementById('statusToast');
+  if(!t) return;
+  t.textContent = message;
+  t.classList.add('show');
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function normalizeItem(item){
+  return {
+    id: item.id,
+    name: item.name || '',
+    cat: item.cat || 'General',
+    price: Number(item.price || 0),
+    img: item.img || null,
+    swatch: item.swatch || null,
+    image_path: item.image_path || null,
+    created_at: item.created_at || null
+  };
+}
+
+/* =========================================================
+   PART 6 — LOAD COLLECTIONS FROM SUPABASE DATABASE
+========================================================= */
+async function loadCollections(){
+  const { data, error } = await supabaseClient
+    .from('collections')
+    .select('*')
+    .order('created_at', { ascending:false });
+
+  if(error){
+    console.error('Supabase load error:', error);
+    toast('Could not load collections from Supabase');
+    return [];
+  }
+
+  return (data || []).map(normalizeItem);
+}
+
+async function refreshCollections(){
+  const data = await loadCollections();
+
+  // Use Supabase as the source of truth.
+  // If the table is empty, the site will show 'No collections available'.
+  stock = data;
+
+  renderProducts();
+  renderAdminList();
+}
+
+/* =========================================================
+   PART 7 — SUPABASE STORAGE IMAGE UPLOAD
+========================================================= */
+async function uploadCollectionImage(file){
+  if(!file) return { url:null, path:null };
+
+  const safeName = file.name
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  const extension = safeName.includes('.')
+    ? safeName.substring(safeName.lastIndexOf('.'))
+    : '.jpg';
+
+  const path = `collections/${Date.now()}-${crypto.randomUUID()}${extension}`;
+
+  const { error: uploadError } = await supabaseClient.storage
+    .from(STORAGE_BUCKET)
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || 'image/jpeg'
+    });
+
+  if(uploadError){
+    console.error('Image upload error:', uploadError);
+    throw new Error('Image upload failed: ' + uploadError.message);
+  }
+
+  const { data } = supabaseClient.storage
+    .from(STORAGE_BUCKET)
+    .getPublicUrl(path);
+
+  return { url:data.publicUrl, path };
+}
+
+/* =========================================================
+   PART 8 — ADD COLLECTION TO SUPABASE
+========================================================= */
+async function addCollection({name, cat, price, file}){
+  let image = {url:null, path:null};
+
+  if(file){
+    image = await uploadCollectionImage(file);
+  }
+
+  const row = {
+    name,
+    cat: cat || 'General',
+    price: Number(price),
+    img: image.url,
+    image_path: image.path,
+    swatch: image.url ? null : 'linear-gradient(135deg,#C9A227,#6B1F2E)'
+  };
+
+  const { data, error } = await supabaseClient
+    .from('collections')
+    .insert([row])
+    .select()
+    .single();
+
+  if(error){
+    // If database insertion fails after image upload, try to remove the orphaned image.
+    if(image.path){
+      await supabaseClient.storage.from(STORAGE_BUCKET).remove([image.path]);
+    }
+    console.error('Collection insert error:', error);
+    throw new Error('Could not save collection: ' + error.message);
+  }
+
+  return normalizeItem(data);
+}
+
+/* =========================================================
+   PART 9 — DELETE COLLECTION + IMAGE
+========================================================= */
+async function deleteCollection(id){
+  const item = stock.find(x => String(x.id) === String(id));
+
+  const { error } = await supabaseClient
+    .from('collections')
+    .delete()
+    .eq('id', id);
+
+  if(error){
+    console.error('Delete error:', error);
+    toast('Could not remove item');
+    return false;
+  }
+
+  if(item && item.image_path){
+    const { error: storageError } = await supabaseClient.storage
+      .from(STORAGE_BUCKET)
+      .remove([item.image_path]);
+
+    if(storageError){
+      console.warn('Image delete warning:', storageError);
+    }
+  }
+
+  await refreshCollections();
+  toast('Item removed ✓');
+  return true;
+}
+
+/* =========================================================
+   PART 10 — RENDER PRODUCTS
+========================================================= */
+function buildWhatsAppLink(item){
+  const details = [
+    'Hello, I am interested in this collection item.',
+    `Item: ${item.name}`,
+    `Category: ${item.cat || 'General'}`,
+    `Price: ₹${Number(item.price).toLocaleString('en-IN')}`,
+    'Please send me availability and more details.'
+  ].join('\n');
+
+  return `https://wa.me/917258973379?text=${encodeURIComponent(details)}`;
+}
+
 function renderProducts(){
   const grid = document.getElementById('productGrid');
-  grid.innerHTML = "";
-  stock.forEach(item=>{
+  if(!grid) return;
+
+  grid.innerHTML = '';
+
+  if(!stock.length){
+    grid.innerHTML = '<div style="padding:30px;text-align:center;grid-column:1/-1;">No collections available.</div>';
+    return;
+  }
+
+  stock.forEach(item => {
     const el = document.createElement('div');
     el.className = 'tag';
+
     const mediaInner = item.img
-      ? `<img src="${item.img}" alt="${escapeHtml(item.name)}">`
+      ? `<img src="${escapeHtml(item.img)}" alt="${escapeHtml(item.name)}" loading="lazy">`
       : `<div style="width:100%;height:100%;background:${item.swatch || 'linear-gradient(135deg,#C9A227,#6B1F2E)'}"></div>`;
+
     const whatsappLink = buildWhatsAppLink(item);
+
     el.innerHTML = `
       <div class="tag-media">
         ${mediaInner}
         <div class="tag-hole"></div>
-        <button class="tag-del" data-id="${item.id}" title="Remove">&times;</button>
+        ${isAdmin && !String(item.id).startsWith('d')
+          ? `<button class="tag-del" data-id="${escapeHtml(item.id)}" title="Remove">&times;</button>`
+          : ''}
       </div>
       <div class="tag-body">
         <div class="tag-name">${escapeHtml(item.name)}</div>
@@ -660,316 +886,262 @@ function renderProducts(){
         <div class="tag-action"><a href="${whatsappLink}" target="_blank" rel="noopener">Message about this item</a></div>
       </div>
     `;
+
     grid.appendChild(el);
   });
-  grid.querySelectorAll('.tag-del').forEach(btn=>{
-    btn.addEventListener('click', (e)=>{
+
+  grid.querySelectorAll('.tag-del').forEach(btn => {
+    btn.addEventListener('click', async e => {
       e.stopPropagation();
+      if(!isAdmin) return;
+
       const id = btn.getAttribute('data-id');
-      stock = stock.filter(s=>s.id!==id);
-      saveStock(stock);
-      renderProducts();
-      renderAdminList();
-      toast("Item removed");
+      if(!confirm('Remove this collection item?')) return;
+
+      btn.disabled = true;
+      await deleteCollection(id);
     });
   });
 }
-function escapeHtml(str){
-  return String(str).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-}
-function buildWhatsAppLink(item){
-  const details = [
-    `Hello Kalam, I am interested in this collection item.`,
-    `Item: ${item.name}`,
-    `Category: ${item.cat || 'General'}`,
-    `Price: ₹${Number(item.price).toLocaleString('en-IN')}`,
-    item.img ? 'Image: shown in the item preview.' : 'Image: no preview available.',
-    `Please send me availability and more details.`
-  ].join('\n');
-  return `https://wa.me/917258973379?text=${encodeURIComponent(details)}`;
-}
-renderProducts();
 
 /* =========================================================
-   TOAST
-========================================================= */
-let toastTimer;
-function toast(msg){
-  const t = document.getElementById('statusToast');
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
-}
-
-/* =========================================================
-   NAV
-========================================================= */
-const header = document.getElementById('siteHeader');
-window.addEventListener('scroll', ()=>{
-  header.classList.toggle('scrolled', window.scrollY > 40);
-});
-const navToggle = document.getElementById('navToggle');
-const siteNav = document.getElementById('siteNav');
-navToggle.addEventListener('click', ()=> siteNav.classList.toggle('open'));
-document.querySelectorAll('.nav-close').forEach(a=>a.addEventListener('click', ()=>siteNav.classList.remove('open')));
-
-/* =========================================================
-   INTRO — dismiss
-========================================================= */
-const intro = document.getElementById('intro');
-function dismissIntro(){ intro.classList.add('hide'); }
-document.getElementById('enterBtn').addEventListener('click', dismissIntro);
-setTimeout(dismissIntro, 7600);
-
-// Ken Burns slideshow cycling through the shop photos
-(function(){
-  const slides = document.querySelectorAll('.intro-slide');
-  let i = 0;
-  function show(idx){
-    slides.forEach((s,n)=>{
-      s.classList.toggle('active', n===idx);
-      if(n===idx){ s.style.animation='none'; void s.offsetWidth; s.style.animation=''; }
-    });
-  }
-  show(0);
-  setInterval(()=>{ i = (i+1)%slides.length; show(i); }, 2500);
-})();
-
-/* =========================================================
-   THREE.JS — INTRO SCENE (drifting fabric bolts)
-========================================================= */
-(function(){
-  const canvas = document.getElementById('intro-canvas');
-  const renderer = new THREE.WebGLRenderer({canvas, alpha:true, antialias:true});
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 100);
-  camera.position.set(0,0,9);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-  renderer.setSize(window.innerWidth, window.innerHeight);
-
-  const light1 = new THREE.PointLight(0xE8C766, 2.2, 30); light1.position.set(4,4,6); scene.add(light1);
-  const light2 = new THREE.PointLight(0x6B1F2E, 1.6, 30); light2.position.set(-5,-3,4); scene.add(light2);
-  scene.add(new THREE.AmbientLight(0x332218, 1.2));
-
-  const colors = [0x6B1F2E, 0xC9A227, 0x0E4B43, 0xF3E9D8];
-  const bolts = [];
-  for(let i=0;i<9;i++){
-    const geo = new THREE.CylinderGeometry(0.35,0.35,2.3,24,1,true);
-    const mat = new THREE.MeshStandardMaterial({color:colors[i%colors.length], roughness:0.55, metalness:0.15, side:THREE.DoubleSide});
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set((Math.random()-0.5)*10, (Math.random()-0.5)*7, (Math.random()-0.5)*6-2);
-    mesh.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
-    mesh.userData.speed = 0.15 + Math.random()*0.3;
-    scene.add(mesh);
-    bolts.push(mesh);
-  }
-  function animate(){
-    requestAnimationFrame(animate);
-    bolts.forEach(b=>{ b.rotation.x += 0.0025*b.userData.speed; b.rotation.y += 0.004*b.userData.speed; });
-    renderer.render(scene, camera);
-  }
-  animate();
-  window.addEventListener('resize', ()=>{
-    camera.aspect = window.innerWidth/window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
-})();
-
-/* =========================================================
-   THREE.JS — HERO SCENE (draped cloth + hanging bolts, parallax)
-========================================================= */
-(function(){
-  const canvas = document.getElementById('hero-canvas');
-  const renderer = new THREE.WebGLRenderer({canvas, alpha:true, antialias:true});
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
-  camera.position.set(2.2, 0.4, 8);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-  function size(){
-    const heroEl = document.getElementById('hero');
-    renderer.setSize(heroEl.clientWidth, heroEl.clientHeight);
-    camera.aspect = heroEl.clientWidth/heroEl.clientHeight;
-    camera.updateProjectionMatrix();
-  }
-  size();
-
-  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-  const key = new THREE.DirectionalLight(0xffe9c2, 1.1); key.position.set(5,6,5); scene.add(key);
-  const rim = new THREE.DirectionalLight(0xC9A227, 0.7); rim.position.set(-6,-2,-4); scene.add(rim);
-
-  // Draped cloth plane (translucent gold, sits over the photo on the right)
-  const clothGeo = new THREE.PlaneGeometry(6, 7, 48, 56);
-  const clothMat = new THREE.MeshStandardMaterial({color:0xC9A227, roughness:0.7, metalness:0.2, side:THREE.DoubleSide, transparent:true, opacity:0.4});
-  const cloth = new THREE.Mesh(clothGeo, clothMat);
-  cloth.position.set(4.4, -0.4, -1.5);
-  cloth.rotation.y = -0.35;
-  scene.add(cloth);
-  const pos = clothGeo.attributes.position;
-  const basePos = pos.array.slice();
-
-  // Floating fabric bolts (rolled cylinders) as accents
-  const boltColors = [0xC9A227, 0x0E4B43, 0xF3E9D8];
-  const bolts = [];
-  for(let i=0;i<4;i++){
-    const geo = new THREE.CylinderGeometry(0.28,0.28,1.6,20);
-    const mat = new THREE.MeshStandardMaterial({color:boltColors[i%boltColors.length], roughness:0.5, metalness:0.1});
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(4.6 + Math.random()*1.6, 1.6 - i*0.9, 1.2 + Math.random()*1.5);
-    mesh.rotation.z = Math.PI/2 + (Math.random()-0.5)*0.4;
-    mesh.userData.float = Math.random()*Math.PI*2;
-    scene.add(mesh);
-    bolts.push(mesh);
-  }
-
-  let t = 0;
-  let mouseX = 0, mouseY = 0;
-  window.addEventListener('mousemove', (e)=>{
-    mouseX = (e.clientX/window.innerWidth - 0.5);
-    mouseY = (e.clientY/window.innerHeight - 0.5);
-  });
-
-  function animate(){
-    requestAnimationFrame(animate);
-    t += 0.012;
-    // cloth wave deformation
-    for(let i=0;i<pos.count;i++){
-      const x = basePos[i*3], y = basePos[i*3+1];
-      const wave = Math.sin(x*0.9 + t) * 0.18 + Math.sin(y*0.6 + t*1.3) * 0.12;
-      pos.setZ(i, wave);
-    }
-    pos.needsUpdate = true;
-    clothGeo.computeVertexNormals();
-    cloth.rotation.y = -0.35 + mouseX*0.15;
-
-    bolts.forEach(b=>{
-      b.position.y += Math.sin(t + b.userData.float)*0.0025;
-      b.rotation.x += 0.003;
-    });
-
-    camera.position.x = 2.2 + mouseX*0.6;
-    camera.position.y = 0.4 - mouseY*0.4;
-    camera.lookAt(3, 0, -1);
-
-    renderer.render(scene, camera);
-  }
-  animate();
-  window.addEventListener('resize', size);
-})();
-
-/* =========================================================
-   ADMIN — login / stock management
+   ADMIN — LOGIN / STOCK MANAGEMENT
 ========================================================= */
 const loginOverlay = document.getElementById('loginOverlay');
 const stockOverlay = document.getElementById('stockOverlay');
 const adminBadge = document.getElementById('adminBadge');
-let isAdmin = false;
-
-document.getElementById('openAdminBtn').addEventListener('click', ()=>{
-  if(isAdmin){ openStockModal(); }
-  else{ loginOverlay.classList.add('open'); document.getElementById('adminPassInput').focus(); }
-});
-document.getElementById('closeLoginBtn').addEventListener('click', ()=> loginOverlay.classList.remove('open'));
-document.getElementById('closeStockBtn').addEventListener('click', ()=> stockOverlay.classList.remove('open'));
-loginOverlay.addEventListener('click', (e)=>{ if(e.target===loginOverlay) loginOverlay.classList.remove('open'); });
-stockOverlay.addEventListener('click', (e)=>{ if(e.target===stockOverlay) stockOverlay.classList.remove('open'); });
-
-document.getElementById('loginSubmitBtn').addEventListener('click', tryLogin);
-document.getElementById('adminPassInput').addEventListener('keydown', (e)=>{ if(e.key==='Enter') tryLogin(); });
-
-function tryLogin(){
-  const val = document.getElementById('adminPassInput').value;
-  if(val === ADMIN_PASSWORD){
-    isAdmin = true;
-    document.body.classList.add('admin-on');
-    adminBadge.classList.add('show');
-    loginOverlay.classList.remove('open');
-    document.getElementById('adminPassInput').value = "";
-    document.getElementById('loginErr').style.display = 'none';
-    openStockModal();
-    toast("Welcome back, Ibrahim ji");
-    renderProducts(); // re-render to show delete buttons
-  } else {
-    document.getElementById('loginErr').style.display = 'block';
-  }
-}
-document.getElementById('exitAdminBtn').addEventListener('click', ()=>{
-  isAdmin = false;
-  document.body.classList.remove('admin-on');
-  adminBadge.classList.remove('show');
-  renderProducts();
-  toast("Admin mode off");
-});
 
 function openStockModal(){
   stockOverlay.classList.add('open');
   renderAdminList();
 }
 
-let pendingImage = null;
-document.getElementById('itemImage').addEventListener('change', (e)=>{
+document.getElementById('openAdminBtn').addEventListener('click', () => {
+  if(isAdmin){
+    openStockModal();
+  }else{
+    loginOverlay.classList.add('open');
+    document.getElementById('adminPassInput').focus();
+  }
+});
+
+document.getElementById('closeLoginBtn').addEventListener('click', () => loginOverlay.classList.remove('open'));
+document.getElementById('closeStockBtn').addEventListener('click', () => stockOverlay.classList.remove('open'));
+loginOverlay.addEventListener('click', e => { if(e.target === loginOverlay) loginOverlay.classList.remove('open'); });
+stockOverlay.addEventListener('click', e => { if(e.target === stockOverlay) stockOverlay.classList.remove('open'); });
+
+document.getElementById('loginSubmitBtn').addEventListener('click', tryLogin);
+document.getElementById('adminPassInput').addEventListener('keydown', e => {
+  if(e.key === 'Enter') tryLogin();
+});
+
+function tryLogin(){
+  const val = document.getElementById('adminPassInput').value;
+
+  if(val === ADMIN_PASSWORD){
+    isAdmin = true;
+    document.body.classList.add('admin-on');
+    adminBadge.classList.add('show');
+    loginOverlay.classList.remove('open');
+    document.getElementById('adminPassInput').value = '';
+    document.getElementById('loginErr').style.display = 'none';
+    openStockModal();
+    toast('Welcome back');
+    renderProducts();
+  }else{
+    document.getElementById('loginErr').style.display = 'block';
+  }
+}
+
+document.getElementById('exitAdminBtn').addEventListener('click', () => {
+  isAdmin = false;
+  document.body.classList.remove('admin-on');
+  adminBadge.classList.remove('show');
+  stockOverlay.classList.remove('open');
+  renderProducts();
+  toast('Admin mode off');
+});
+
+/* =========================================================
+   IMAGE PICKER + PREVIEW
+========================================================= */
+document.getElementById('itemImage').addEventListener('change', e => {
   const file = e.target.files[0];
   if(!file) return;
+
+  if(!file.type.startsWith('image/')){
+    toast('Please select an image file');
+    e.target.value = '';
+    return;
+  }
+
+  if(file.size > 5 * 1024 * 1024){
+    toast('Image must be smaller than 5 MB');
+    e.target.value = '';
+    return;
+  }
+
+  pendingImageFile = file;
+
   const reader = new FileReader();
-  reader.onload = ()=>{
-    pendingImage = reader.result;
-    const box = document.getElementById('previewBox');
-    box.innerHTML = `<img src="${pendingImage}">`;
+  reader.onload = () => {
+    pendingImagePreview = reader.result;
+    document.getElementById('previewBox').innerHTML = `<img src="${pendingImagePreview}" alt="Preview">`;
   };
   reader.readAsDataURL(file);
 });
 
-document.getElementById('addStockBtn').addEventListener('click', ()=>{
+/* =========================================================
+   ADD BUTTON
+========================================================= */
+document.getElementById('addStockBtn').addEventListener('click', async () => {
+  if(!isAdmin){
+    toast('Please login as admin first');
+    return;
+  }
+
   const name = document.getElementById('itemName').value.trim();
   const cat = document.getElementById('itemCat').value.trim();
   const price = document.getElementById('itemPrice').value;
   const err = document.getElementById('stockErr');
-  if(!name || !price){ err.style.display='block'; return; }
-  err.style.display='none';
+  const button = document.getElementById('addStockBtn');
 
-  const newItem = {
-    id: 'c' + Date.now(),
-    name, cat, price: Number(price),
-    img: pendingImage || null,
-    swatch: pendingImage ? null : 'linear-gradient(135deg,#C9A227,#6B1F2E)'
-  };
-  stock.unshift(newItem);
-  saveStock(stock);
-  renderProducts();
-  renderAdminList();
-  toast("Stock added ✓");
+  if(!name || !price){
+    err.textContent = 'Please fill in item name and price.';
+    err.style.display = 'block';
+    return;
+  }
 
-  // reset form
-  document.getElementById('itemName').value = '';
-  document.getElementById('itemCat').value = '';
-  document.getElementById('itemPrice').value = '';
-  document.getElementById('itemImage').value = '';
-  document.getElementById('previewBox').innerHTML = 'No photo';
-  pendingImage = null;
+  if(Number(price) < 0){
+    err.textContent = 'Price cannot be negative.';
+    err.style.display = 'block';
+    return;
+  }
+
+  err.style.display = 'none';
+  button.disabled = true;
+  button.textContent = 'Saving...';
+
+  try{
+    const newItem = await addCollection({
+      name,
+      cat,
+      price,
+      file: pendingImageFile
+    });
+
+    stock = [newItem, ...stock.filter(x => !String(x.id).startsWith('d'))];
+    renderProducts();
+    renderAdminList();
+    toast('Collection added ✓ — visible to all devices');
+
+    document.getElementById('itemName').value = '';
+    document.getElementById('itemCat').value = '';
+    document.getElementById('itemPrice').value = '';
+    document.getElementById('itemImage').value = '';
+    document.getElementById('previewBox').innerHTML = 'No photo';
+    pendingImageFile = null;
+    pendingImagePreview = null;
+  }catch(error){
+    console.error(error);
+    err.textContent = error.message || 'Could not add collection.';
+    err.style.display = 'block';
+  }finally{
+    button.disabled = false;
+    button.textContent = 'Add to Collection';
+  }
 });
 
+/* =========================================================
+   ADMIN LIST
+========================================================= */
 function renderAdminList(){
   const list = document.getElementById('adminStockList');
-  list.innerHTML = '<div style="font-family:var(--mono);font-size:10px;letter-spacing:.15em;color:#8a7d6c;text-transform:uppercase;margin-bottom:10px;">Current stock (' + stock.length + ')</div>';
-  stock.forEach(item=>{
+  if(!list) return;
+
+  const realItems = stock.filter(item => !String(item.id).startsWith('d'));
+
+  list.innerHTML = `
+    <div style="font-family:var(--mono);font-size:10px;letter-spacing:.15em;color:#8a7d6c;text-transform:uppercase;margin-bottom:10px;">
+      Current online stock (${realItems.length})
+    </div>
+  `;
+
+  if(!realItems.length){
+    list.innerHTML += '<div style="font-size:13px;color:#8a7d6c;padding:10px 0;">No online collections added yet.</div>';
+    return;
+  }
+
+  realItems.forEach(item => {
     const row = document.createElement('div');
     row.className = 'admin-stock-row';
-    const thumb = item.img ? `<img src="${item.img}">` : `<div style="width:36px;height:44px;border-radius:2px;background:${item.swatch||'#C9A227'}"></div>`;
-    row.innerHTML = `${thumb}<div class="n">${escapeHtml(item.name)}</div><div class="p">₹${Number(item.price).toLocaleString('en-IN')}</div><button data-id="${item.id}">Remove</button>`;
+
+    const thumb = item.img
+      ? `<img src="${escapeHtml(item.img)}" alt="">`
+      : `<div style="width:36px;height:44px;border-radius:2px;background:${item.swatch || '#C9A227'}"></div>`;
+
+    row.innerHTML = `
+      ${thumb}
+      <div class="n">${escapeHtml(item.name)}</div>
+      <div class="p">₹${Number(item.price).toLocaleString('en-IN')}</div>
+      <button data-id="${escapeHtml(item.id)}">Remove</button>
+    `;
+
     list.appendChild(row);
   });
-  list.querySelectorAll('button[data-id]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
+
+  list.querySelectorAll('button[data-id]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if(!isAdmin) return;
       const id = btn.getAttribute('data-id');
-      stock = stock.filter(s=>s.id!==id);
-      saveStock(stock);
-      renderProducts();
-      renderAdminList();
-      toast("Item removed");
+      if(!confirm('Remove this collection item?')) return;
+      btn.disabled = true;
+      await deleteCollection(id);
     });
   });
 }
+
+/* =========================================================
+   PART 11 — REALTIME SYNC
+   When admin changes data, all open devices can refresh.
+========================================================= */
+function startRealtimeSync(){
+  if(realtimeChannel) return;
+
+  realtimeChannel = supabaseClient
+    .channel('collections-live-sync')
+    .on(
+      'postgres_changes',
+      { event:'*', schema:'public', table:'collections' },
+      async payload => {
+        console.log('Realtime collection change:', payload.eventType);
+        await refreshCollections();
+      }
+    )
+    .subscribe(status => {
+      console.log('Realtime status:', status);
+    });
+}
+
+/* =========================================================
+   PART 12 — START APPLICATION
+========================================================= */
+async function initializeCollections(){
+  console.log('Connecting to Supabase...');
+
+  if(!window.supabase){
+    console.error('Supabase library was not loaded.');
+    toast('Supabase library failed to load');
+    stock = DEFAULT_STOCK.map(normalizeItem);
+    renderProducts();
+    return;
+  }
+
+  await refreshCollections();
+  startRealtimeSync();
+}
+
+initializeCollections();
 </script>
 </body>
 </html>
